@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Replace https://www.your-domain.mu/ with the client's address (the same as seo.siteUrl in config.js), then submit this file in Google Search Console. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://www.your-domain.mu/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://www.your-domain.mu/"/>
+    <xhtml:link rel="alternate" hreflang="fr" href="https://www.your-domain.mu/?lang=fr"/>
+  </url>
+</urlset>
