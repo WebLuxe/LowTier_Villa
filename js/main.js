@@ -131,9 +131,13 @@ const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hi
 const isUns = (s) => /images\.unsplash\.com/.test(s || '');
 const sized = (s, w) => (isUns(s) ? s.replace(/([?&])w=\d+/, '$1').replace(/[?&]$/, '') + (s.includes('?') ? '&' : '?') + 'w=' + w : s);
 const imgOf = (x) => (typeof x === 'string' ? { src: x } : (x || {}));
+/* Phones with very dense screens (3x): photos are fetched at about 2x. In the hand it looks the same, and it is about
+   half the data. (The hero's preload line in index.html says the same with imagesizes="67vw": keep the two in step.) */
+const DENSE_PHONE = innerWidth < 760 && (window.devicePixelRatio || 1) > 2.01;
 function pic(x, { sizes = '100vw', eager = false, cls = '', w = 1200 } = {}) {
   const i = imgOf(x);
   if (!i.src) return '';
+  if (DENSE_PHONE) sizes = sizes.replace(/(\d+(?:\.\d+)?)vw/g, (m, n) => Math.round(n * 0.67) + 'vw');
   const set = isUns(i.src) ? [360, 560, 800, 1100, 1500, 2000].filter((n) => n <= Math.max(w * 1.7, 560)).map((n) => `${sized(i.src, n)} ${n}w`).join(', ') : '';
   return `<img class="${cls}" src="${esc(sized(i.src, w))}"${set ? ` srcset="${esc(set)}" sizes="${sizes}"` : ''} alt="${esc(tx(i.alt))}" ${eager ? 'fetchpriority="high"' : 'loading="lazy"'} decoding="async">`;
 }
@@ -631,8 +635,10 @@ function snapPages() {
   if (snapRO) { snapRO.disconnect(); snapRO = null; }
   if (!on) return;
   const HD = 61;   // the header once the page has scrolled (60px + its line)
-  const fit = () => {
+  const measure = () => {
     const port = innerHeight - HD;
+    $$('[data-fit]').forEach((e) => { e.style.removeProperty('zoom'); e.removeAttribute('data-fit'); });
+    $$('[data-fitpad]').forEach((e) => { e.style.removeProperty('padding-top'); e.style.removeProperty('padding-bottom'); e.removeAttribute('data-fitpad'); });
     $$('main .snap-pt').forEach((e) => { e.classList.remove('snap-pt'); e.style.removeProperty('scroll-margin-top'); });
     const ft = $('.ft'); if (ft) ft.classList.add('snap-end');
     $$('main > *').forEach((e) => { e.style.removeProperty('--strip'); e.classList.remove('snap-strip', 'snap-hide'); });
@@ -668,10 +674,79 @@ function snapPages() {
         if (el !== hero && over > 0 && over < 40) { const pt = parseFloat(getComputedStyle(el).paddingTop); if (pt - over >= 8) el.style.paddingTop = (pt - over) + 'px'; }
       }
     }
+    fitShort(kids, hero, port);
+  };
+  /* Phones shorter than the design was drawn for (most iPhones, compact Androids): the home page keeps one section
+     per screen by drawing the sections a little smaller, all by the same amount (never under 80%), instead of
+     letting them run past the bottom of the screen. The hero first gives up some of the space above its title. */
+  const fitShort = (kids, hero, port) => {
+    if (page !== 'home' || innerWidth >= 760 || innerHeight <= innerWidth || !(window.CSS && CSS.supports && CSS.supports('zoom', '0.9'))) return;
+    const MIN = 0.8;
+    const tall = (el) => el.getBoundingClientRect().height;
+    const flow = (el) => [...el.children].filter((c) => { if (/^(IMG|VIDEO|CANVAS|PICTURE|SVG)$/i.test(c.tagName) || !c.offsetHeight) return false; const p = getComputedStyle(c).position; return p !== 'absolute' && p !== 'fixed'; });
+    const pad = (el) => { const cs = getComputedStyle(el); return parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom); };
+    const need = (el, room) => { const h = tall(el), p = Math.min(pad(el), room * 0.5); return h > room + 3 ? (room - p) / Math.max(1, h - p) : 1; };
+    const draw = (el, k) => flow(el).forEach((c) => { if (k < 0.995) { c.style.zoom = k.toFixed(3); c.dataset.fit = '1'; } else { c.style.removeProperty('zoom'); c.removeAttribute('data-fit'); } });
+    const settle = (list, k) => {   // list: [element, room]; the gaps between things do not shrink, so check and go a little further if needed
+      for (let i = 0; i < 4; i++) {
+        list.forEach(([el]) => draw(el, k));
+        if (k <= MIN || !list.some(([el, room]) => tall(el) > room + 2)) break;
+        k = Math.max(MIN, k * 0.965);
+      }
+    };
+    if (hero) {
+      const room = innerHeight - (parseFloat(hero.style.getPropertyValue('--hero-top')) || 0) - (parseFloat(hero.style.getPropertyValue('--strip')) || 0);
+      let over = tall(hero) - room;
+      if (over > 3) {
+        const pe = [hero, ...flow(hero)].find((e) => parseFloat(getComputedStyle(e).paddingTop) > HD + 40);
+        if (pe) { pe.style.paddingTop = Math.max(HD + 24, parseFloat(getComputedStyle(pe).paddingTop) - over) + 'px'; pe.dataset.fitpad = '1'; over = tall(hero) - room; }
+        if (over > 3) settle([[hero, room]], Math.max(MIN, need(hero, room)));
+        // the last few pixels come from the space under the hero's content
+        over = tall(hero) - room;
+        if (over > 2) {
+          const be = [hero, ...flow(hero)].find((e) => parseFloat(getComputedStyle(e).paddingBottom) > 28);
+          if (be) { const z = parseFloat(be.style.zoom) || 1, pb = parseFloat(getComputedStyle(be).paddingBottom); be.style.paddingBottom = Math.max(14, pb - over / z) + 'px'; be.dataset.fitpad = '1'; }
+        }
+      }
+    }
+    const list = [];
+    for (const el of kids) {
+      if (el === hero || el.classList.contains('snap-strip') || el.classList.contains('pin-spacer') || el.hasAttribute('data-nofit') || !el.offsetHeight) continue;   // data-nofit: a scene that sizes itself
+      const rows = el.classList.contains('snap-pt') ? [] : $$('.rows > .row', el);
+      if (rows.length) rows.forEach((r) => list.push([r, port])); else if (el.classList.contains('snap-pt')) list.push([el, port]);
+    }
+    const k = Math.max(MIN, Math.min(1, ...list.map(([el, room]) => need(el, room))));
+    if (k < 0.995) settle(list, k);
+    // still a little too tall at the smallest size: take the rest from the section's own top and bottom space
+    list.forEach(([el, room]) => {
+      const over = tall(el) - room;
+      if (over <= 2) return;
+      const cs = getComputedStyle(el), pt = parseFloat(cs.paddingTop), pb = parseFloat(cs.paddingBottom), spare = pt + pb - 20;
+      if (spare < over) return;
+      el.style.paddingTop = (pt - over * pt / (pt + pb)) + 'px'; el.style.paddingBottom = (pb - over * pb / (pt + pb)) + 'px'; el.dataset.fitpad = '1';
+    });
+  };
+  // The stops are re-made with the browser's own snapping switched off. Otherwise, in the moment between the old
+  // stops going and the new ones arriving, the browser takes the only stop left (the footer, or a pinned scene)
+  // as "the section on screen" and carries the page there: after a rotation, an answer opening, a form growing.
+  const fit = () => {
+    const live = root.classList.contains('snap-on');
+    if (live) root.classList.remove('snap-on');
+    try { measure(); } finally { if (live) { void root.offsetHeight; root.classList.add('snap-on'); } }
   };
   let t = 0;
   const later = () => { clearTimeout(t); t = setTimeout(() => { fit(); snapPages.realign && snapPages.realign(); }, 120); };
   fit();
+  /* A page that swaps its sections for others (the booking form for its confirmation) does it through this: the
+     browser's snapping is off while the old sections go, the page is put at the top of the new one, then it is back on. */
+  snapPages.swap = (change) => {
+    const live = root.classList.contains('snap-on');
+    if (live) root.classList.remove('snap-on');
+    change();
+    scrollTo({ top: 0, behavior: 'instant' });
+    measure();
+    if (live) { void root.offsetHeight; scrollTo({ top: 0, behavior: 'instant' }); root.classList.add('snap-on'); }
+  };
   if (!root.classList.contains('snap-on')) {
     const settleOn = () => setTimeout(() => { const y = scrollY; root.classList.add('snap-on'); scrollTo({ top: y, behavior: 'instant' }); }, 700);
     if (document.readyState === 'complete') settleOn(); else addEventListener('load', settleOn, { once: true });
@@ -916,12 +991,12 @@ const TIER = {
     ].filter(Boolean);
   },
   headerCta: () => `<a class="btn btn-accent hd-cta" href="${document.body.dataset.page === '404' ? './' : ''}#book">${esc(ui('checkAvailability'))}</a>`,
-  menuExtra: () => [`<a class="btn btn-accent btn-lg" href="#book">${esc(ui('checkAvailability'))}${icon('arrow', 'i-go')}</a>`, waHref() && `<a class="btn btn-wa btn-lg" href="${waHref(tx(K().whatsappMessage))}" target="_blank" rel="noopener">${icon('wa')}WhatsApp</a>`].filter(Boolean).join(''),
+  menuExtra: () => [`<a class="btn btn-accent btn-lg" href="${document.body.dataset.page === '404' ? './' : ''}#book">${esc(ui('checkAvailability'))}${icon('arrow', 'i-go')}</a>`, waHref() && `<a class="btn btn-wa btn-lg" href="${waHref(tx(K().whatsappMessage))}" target="_blank" rel="noopener">${icon('wa')}WhatsApp</a>`].filter(Boolean).join(''),
   pages: { home: () => [hero(), directBand(), about(), amenities(), gallery(), rates(), reviews(), book(), faq(), findUs()].join('') },
   /** Phones: a bar along the bottom with the price, WhatsApp and the way to the calendar (it replaces the floating button). */
   after() {
     const p = fromPrice();
-    return `<div class="m-bar">${isFinite(p) ? `<p><span>${esc(ui('from'))}</span><b>${esc(money(p))}</b><small>${esc(ui('perNight'))}</small></p>` : ''}<div class="m-bar-go">${waHref() ? `<a class="m-wa" href="${waHref(tx(K().whatsappMessage))}" target="_blank" rel="noopener" aria-label="${esc(ui('whatsappUs'))}">${icon('wa')}</a>` : ''}<a class="btn btn-accent" href="#book">${esc(ui('checkDates'))}</a></div></div>`;
+    return `<div class="m-bar">${isFinite(p) ? `<p><span>${esc(ui('from'))}</span><b>${esc(money(p))}</b><small>${esc(ui('perNight'))}</small></p>` : ''}<div class="m-bar-go">${waHref() ? `<a class="m-wa" href="${waHref(tx(K().whatsappMessage))}" target="_blank" rel="noopener" aria-label="${esc(ui('whatsappUs'))}">${icon('wa')}</a>` : ''}<a class="btn btn-accent" href="${document.body.dataset.page === '404' ? './' : ''}#book">${esc(ui('checkDates'))}</a></div></div>`;
   },
   schema(base) {
     const o = { ...base, '@type': (C.seo && C.seo.schemaType) || 'LodgingBusiness', currenciesAccepted: BASE() };
